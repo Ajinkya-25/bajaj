@@ -81,19 +81,24 @@ class QueryPipeline:
         return "\n---\n".join(context_parts)
 
     def _generate_answer(self, query: str, context: str) -> str:
-        """Generate answer using Gemini API"""
+        """Generate answer using Gemini API with optimized prompt"""
         try:
-            prompt = f"""Based on the following context, please answer the question accurately and concisely.
-
-Context:
-{context}
+            # Optimized prompt for token efficiency
+            prompt = f"""Context: {context[:2000]}
 
 Question: {query}
 
-Please provide a comprehensive answer based only on the provided context. If the context doesn't contain enough information to answer the question, please state that clearly."""
+Answer based only on the context above. Be specific and include relevant details like numbers, dates, conditions. If information is not in context, state clearly."""
 
             model = genai.GenerativeModel(model_name=settings.LLM_MODEL)
-            response = model.generate_content(prompt)
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,  # Low temperature for consistency
+                    max_output_tokens=300,  # Limit response length
+                    top_p=0.8
+                )
+            )
 
             return response.text.strip() if response.text else "No response generated"
 
