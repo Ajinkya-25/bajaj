@@ -1,0 +1,30 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Env file
+.env
+.idea
+# Distribution / packaging
+.Python
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# MacOS
+.DS_Store
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
