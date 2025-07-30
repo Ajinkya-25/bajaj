@@ -14,7 +14,7 @@ class QueryPipeline:
         self.postgres_db = PostgresManager()
         genai.configure(api_key=settings.GEMINI_API_KEY)
 
-    def process_query(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def process_query(self, query: str, top_k: int = 3) -> Dict[str, Any]:
         """Process a single query through the pipeline"""
         try:
             # Step 1: Generate Query Embedding
@@ -60,7 +60,7 @@ class QueryPipeline:
         except Exception as e:
             return {"error": f"Query processing failed: {str(e)}"}
 
-    def process_multiple_queries(self, queries: List[str], top_k: int = 5) -> List[Dict[str, Any]]:
+    def process_multiple_queries(self, queries: List[str], top_k: int = 3) -> List[Dict[str, Any]]:
         """Process multiple queries"""
         results = []
         for query in queries:
@@ -70,8 +70,9 @@ class QueryPipeline:
 
     def _prepare_context(self, query: str, chunks: List[Dict], scores: List[float]) -> str:
         """Prepare context from retrieved chunks"""
+        MAX_CONTEXT_CHUNKS = 3
         context_parts = []
-        for chunk, score in zip(chunks, scores):
+        for chunk, score in zip(chunks[:MAX_CONTEXT_CHUNKS], scores[:MAX_CONTEXT_CHUNKS]):
             context_parts.append(
                 f"Source: {chunk['filename']}\n"
                 f"Content: {chunk['content']}\n"
