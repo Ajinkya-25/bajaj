@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 
 
-class EnhancedFAISSManager:
+class FAISSManager:
     def __init__(self, dimension: int):
         self.dimension = dimension
         self.index_path = settings.FAISS_INDEX_PATH
@@ -118,7 +118,7 @@ class EnhancedFAISSManager:
         return vector_ids
 
     def search_by_category(self, query_vector: np.ndarray, categories: List[str] = None,
-                           k: int = 5, importance_threshold: float = 0.0) -> Tuple[List[float], List[int], List[str]]:
+                           k: int = 3, importance_threshold: float = 0.0) -> Tuple[List[float], List[int], List[str]]:
         """Search for similar vectors within specific categories"""
         if self.index.ntotal == 0:
             return [], [], []

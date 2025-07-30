@@ -9,8 +9,8 @@ import os
 from document_processor import DocumentProcessorFactory
 from text_processor import EnhancedTextProcessor
 from embedding_manager import EmbeddingManager
-from vectordb import EnhancedFAISSManager
-from postgres_manager import EnhancedPostgresManager
+from vectordb import FAISSManager
+from postgres_manager import PostgresManager
 
 # Configure module-level logger
 logger = logging.getLogger(__name__)
@@ -20,8 +20,8 @@ class StreamlinedProcessingPipeline:
     def __init__(self):
         self.text_processor = EnhancedTextProcessor()
         self.embedding_manager = EmbeddingManager()
-        self.vector_db = EnhancedFAISSManager(self.embedding_manager.get_dimension())
-        self.postgres_db = EnhancedPostgresManager()
+        self.vector_db = FAISSManager(self.embedding_manager.get_dimension())
+        self.postgres_db = PostgresManager()
         logger.info("Initialized StreamlinedProcessingPipeline")
 
     def process_document_from_url(self, document_url: str, questions: List[str]) -> Dict[str, Any]:

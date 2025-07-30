@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 from document_processor import DocumentProcessorFactory
 from text_processor import EnhancedTextProcessor
 from embedding_manager import EmbeddingManager
-from vectordb import EnhancedFAISSManager
-from postgres_manager import EnhancedPostgresManager
+from vectordb import FAISSManager
+from postgres_manager import PostgresManager
 import google.generativeai as genai
 from settings import settings
 
@@ -26,8 +26,8 @@ app = FastAPI(title="RAG System API", version="1.0.0")
 # Initialize components
 text_processor = EnhancedTextProcessor()
 embedding_manager = EmbeddingManager()
-vector_db = EnhancedFAISSManager(embedding_manager.get_dimension())
-postgres_db = EnhancedPostgresManager()
+vector_db = FAISSManager(embedding_manager.get_dimension())
+postgres_db = PostgresManager()
 genai.configure(api_key=settings.GEMINI_API_KEY)
 
 

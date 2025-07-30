@@ -12,7 +12,7 @@ from settings import settings
 logger = logging.getLogger(__name__)
 
 
-class EnhancedPostgresManager:
+class PostgresManager:
     def __init__(self):
         self.connection_params = {
             'host': settings.POSTGRES_HOST,
@@ -56,6 +56,7 @@ class EnhancedPostgresManager:
             with self.get_connection() as conn:
                 with conn.cursor() as cur:
                     # Create documents table with enhanced fields
+                    cur.execute("DROP TABLE IF EXISTS query_results;")
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS documents (
                             id SERIAL PRIMARY KEY,

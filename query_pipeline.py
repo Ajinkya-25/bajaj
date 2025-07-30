@@ -14,7 +14,7 @@ class QueryPipeline:
         self.postgres_db = PostgresManager()
         genai.configure(api_key=settings.GEMINI_API_KEY)
 
-    def process_query(self, query: str, top_k: int = 5) -> Dict[str, Any]:
+    def process_query(self, query: str, top_k: int = 3) -> Dict[str, Any]:
         """Process a single query through the pipeline"""
         try:
             # Step 1: Generate Query Embedding
