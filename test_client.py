@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 
 class RAGAPITester:
-    def __init__(self, base_url: str = "http://localhost:8000"):
+    def __init__(self, base_url: str = "https://bajaj-3rpo.onrender.com"):
         self.base_url = base_url.rstrip('/')
 
     def test_health(self):

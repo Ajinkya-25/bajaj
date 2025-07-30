@@ -1,165 +1,189 @@
-# api/main.py - Debug Version
-from fastapi import FastAPI, UploadFile, File, HTTPException
+# main.py
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import List, Optional
+from pydantic import BaseModel, HttpUrl
+from typing import List
 import uvicorn
-import traceback
 import logging
+import time
+import requests
+import os
+from urllib.parse import urlparse
 
-# Set up logging
+from document_processor import DocumentProcessorFactory
+from text_processor import EnhancedTextProcessor
+from embedding_manager import EmbeddingManager
+from vectordb import EnhancedFAISSManager
+from postgres_manager import EnhancedPostgresManager
+import google.generativeai as genai
+from settings import settings
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-try:
-    from processing_pipeline import ProcessingPipeline
-    from query_pipeline import QueryPipeline
-
-    logger.info("Successfully imported pipeline modules")
-except Exception as e:
-    logger.error(f"Failed to import modules: {str(e)}")
-    logger.error(traceback.format_exc())
-    raise
-
 app = FastAPI(title="RAG System API", version="1.0.0")
 
-# Initialize pipelines with error handling
-try:
-    logger.info("Initializing processing pipeline...")
-    processing_pipeline = ProcessingPipeline()
-    logger.info("Processing pipeline initialized successfully")
-
-    logger.info("Initializing query pipeline...")
-    query_pipeline = QueryPipeline()
-    logger.info("Query pipeline initialized successfully")
-except Exception as e:
-    logger.error(f"Failed to initialize pipelines: {str(e)}")
-    logger.error(traceback.format_exc())
-    # Create dummy pipelines to prevent startup failure
-    processing_pipeline = None
-    query_pipeline = None
+# Initialize components
+text_processor = EnhancedTextProcessor()
+embedding_manager = EmbeddingManager()
+vector_db = EnhancedFAISSManager(embedding_manager.get_dimension())
+postgres_db = EnhancedPostgresManager()
+genai.configure(api_key=settings.GEMINI_API_KEY)
 
 
-class QueryRequest(BaseModel):
-    query: str
-    top_k: Optional[int] = 5
+class ProcessRequest(BaseModel):
+    document_url: HttpUrl
+    questions: List[str]
 
 
-class MultipleQueriesRequest(BaseModel):
-    queries: List[str]
-    top_k: Optional[int] = 5
-
-
-@app.post("/upload-document")
-async def upload_document(file: UploadFile = File(...)):
-    """Upload and process a document"""
+@app.post("/process")
+async def process_document_and_answer(request: ProcessRequest):
+    """Process document and answer questions"""
     try:
-        logger.info(f"Received file upload: {file.filename}")
+        start_time = time.time()
+        logger.info(f"Processing document: {request.document_url}")
 
-        if processing_pipeline is None:
-            raise HTTPException(status_code=503, detail="Processing pipeline not initialized")
+        # Clear existing data
+        postgres_db.clear_all_data()
+        vector_db.clear_database()
 
-        # Read file content
-        logger.info("Reading file content...")
-        content = await file.read()
-        logger.info(f"File content read: {len(content)} bytes")
+        # Download document
+        response = requests.get(str(request.document_url), timeout=30)
+        response.raise_for_status()
 
-        # Process document
-        logger.info("Starting document processing...")
-        result = processing_pipeline.process_document(file.filename, content)
-        logger.info(f"Document processing result: {result}")
+        parsed_url = urlparse(str(request.document_url))
+        filename = os.path.basename(parsed_url.path)
+        if not filename or '.' not in filename:
+            content_type = response.headers.get('content-type', '').lower()
+            if 'pdf' in content_type:
+                filename = 'document.pdf'
+            elif 'word' in content_type or 'docx' in content_type:
+                filename = 'document.docx'
+            else:
+                filename = 'document.txt'
 
-        if "error" in result:
-            logger.error(f"Processing error: {result['error']}")
-            raise HTTPException(status_code=400, detail=result["error"])
+        # Extract text
+        processor = DocumentProcessorFactory.get_processor(filename)
+        raw_text = processor.extract_text(response.content)
 
-        return JSONResponse(content=result)
+        if not raw_text.strip():
+            raise HTTPException(status_code=400, detail="No text content extracted")
+
+        # Process text with categorization
+        processed_text = text_processor.preprocess_text(raw_text)
+        document_sections = text_processor.categorize_and_partition_document(
+            processed_text,
+            metadata={"document_url": str(request.document_url), "filename": filename}
+        )
+
+        if not document_sections:
+            raise HTTPException(status_code=400, detail="No chunks generated")
+
+        # Store document
+        categories = list(set(section.category for section in document_sections))
+        processing_time = time.time() - start_time
+        document_id = postgres_db.store_document_with_url(
+            filename=filename,
+            document_url=str(request.document_url),
+            file_type=processor.get_file_type(),
+            file_size=len(response.content),
+            categories=categories,
+            processing_time=processing_time
+        )
+
+        # Generate embeddings
+        chunk_texts = [section.content for section in document_sections]
+        embeddings = embedding_manager.generate_embeddings(chunk_texts)
+
+        # Prepare metadata for vector storage
+        vector_metadata = []
+        for i, section in enumerate(document_sections):
+            metadata = section.metadata.copy()
+            metadata.update({
+                'document_id': document_id,
+                'chunk_index': i,
+                'category': section.category,
+                'importance_score': section.importance_score,
+                'filename': filename,
+                'document_url': str(request.document_url)
+            })
+            vector_metadata.append(metadata)
+
+        # Store in vector database
+        vector_ids = vector_db.add_vectors_with_categories(embeddings, vector_metadata)
+
+        # Link vector IDs to chunks and store in PostgreSQL
+        chunks_for_postgres = []
+        for i, section in enumerate(document_sections):
+            chunks_for_postgres.append({
+                'content': section.content,
+                'category': section.category,
+                'importance_score': section.importance_score,
+                'metadata': section.metadata,
+                'vector_id': vector_ids[i]
+            })
+
+        postgres_db.store_enhanced_chunks(document_id, chunks_for_postgres)
+        postgres_db.mark_document_processed(document_id)
+
+        # Answer questions
+        all_contexts = []
+        for question in request.questions:
+            # Generate query embedding
+            query_embedding = embedding_manager.generate_query_embedding(question)
+
+            # Search for relevant chunks
+            scores, vector_indices, categories = vector_db.search_by_category(
+                query_embedding, k=5
+            )
+
+            # Get chunks from postgres
+            if vector_indices:
+                chunks = postgres_db.get_chunks_by_vector_ids_with_categories(vector_indices)
+                context = "\n\n".join([chunk['content'] for chunk in chunks])
+                all_contexts.append(f"Question: {question}\nContext: {context}")
+
+        # Combine all contexts for single API call
+        combined_prompt = f"""Based on the provided contexts, answer each question accurately and concisely. Return ONLY the answers in a JSON array format.
+
+{chr(10).join(all_contexts)}
+
+Return the answers as a JSON array: ["answer1", "answer2", ...]"""
+
+        # Single Gemini API call
+        model = genai.GenerativeModel(model_name=settings.LLM_MODEL)
+        response = model.generate_content(combined_prompt)
+
+        if not response.text:
+            raise HTTPException(status_code=500, detail="No response from LLM")
+
+        # Try to parse JSON response
+        try:
+            import json
+            answers = json.loads(response.text.strip())
+            if not isinstance(answers, list):
+                # Fallback: split by lines if not proper JSON
+                answers = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
+        except:
+            # Fallback: split response into answers
+            answers = [line.strip() for line in response.text.strip().split('\n') if line.strip()]
+
+        # Ensure we have the right number of answers
+        while len(answers) < len(request.questions):
+            answers.append("Could not generate answer")
+
+        answers = answers[:len(request.questions)]
+
+        total_time = time.time() - start_time
+        logger.info(f"Completed processing in {total_time:.2f} seconds")
+
+        return JSONResponse(content={"answers": answers})
 
     except HTTPException:
         raise
     except Exception as e:
-        error_msg = f"Upload failed: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@app.post("/query")
-async def process_query(request: QueryRequest):
-    """Process a single query"""
-    try:
-        logger.info(f"Received query: {request.query}")
-
-        if query_pipeline is None:
-            raise HTTPException(status_code=503, detail="Query pipeline not initialized")
-
-        result = query_pipeline.process_query(request.query, request.top_k)
-        logger.info(f"Query result: {result}")
-
-        if "error" in result:
-            logger.error(f"Query error: {result['error']}")
-            raise HTTPException(status_code=400, detail=result["error"])
-
-        return JSONResponse(content=result)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        error_msg = f"Query failed: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@app.post("/multiple-queries")
-async def process_multiple_queries(request: MultipleQueriesRequest):
-    """Process multiple queries"""
-    try:
-        logger.info(f"Received multiple queries: {len(request.queries)}")
-
-        if query_pipeline is None:
-            raise HTTPException(status_code=503, detail="Query pipeline not initialized")
-
-        results = []
-        for query in request.queries:
-            result = query_pipeline.process_query(query, request.top_k)
-            results.append(result)
-
-        return JSONResponse(content={"results": results})
-
-    except Exception as e:
-        error_msg = f"Multiple queries failed: {str(e)}"
-        logger.error(error_msg)
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=error_msg)
-
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    status = {
-        "status": "healthy" if processing_pipeline and query_pipeline else "degraded",
-        "message": "RAG System is running",
-        "processing_pipeline": "ready" if processing_pipeline else "failed",
-        "query_pipeline": "ready" if query_pipeline else "failed"
-    }
-    return status
-
-
-@app.get("/debug")
-async def debug_info():
-    """Debug information endpoint"""
-    try:
-        from settings import settings
-        return {
-            "faiss_path": settings.FAISS_INDEX_PATH,
-            "postgres_host": settings.POSTGRES_HOST,
-            "gemini_configured": bool(settings.GEMINI_API_KEY),
-            "processing_pipeline": "ready" if processing_pipeline else "failed",
-            "query_pipeline": "ready" if query_pipeline else "failed"
-        }
-    except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Processing failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
 if __name__ == "__main__":
