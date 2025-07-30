@@ -3,7 +3,6 @@ import re
 from typing import List, Dict, Any, Tuple
 import tiktoken
 from settings import settings
-import google.generativeai as genai
 from dataclasses import dataclass
 
 
@@ -19,7 +18,6 @@ class EnhancedTextProcessor:
     def __init__(self):
         self.chunk_size = settings.CHUNK_SIZE * 2  # Increased chunk size for large documents
         self.chunk_overlap = settings.CHUNK_OVERLAP
-        genai.configure(api_key=settings.GEMINI_API_KEY)
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except:
@@ -40,7 +38,7 @@ class EnhancedTextProcessor:
         # Step 1: Identify document structure and sections
         sections = self._identify_document_sections(text)
 
-        # Step 2: Categorize each section
+        # Step 2: Categorize each section and create DocumentSection objects
         categorized_sections = []
         for section in sections:
             category = self._categorize_section(section['content'])
@@ -187,23 +185,14 @@ class EnhancedTextProcessor:
         final_score = min(1.0, base_score + key_term_boost + question_boost) * length_factor
         return final_score
 
-    def _create_category_chunks(self, section: DocumentSection) -> List[Dict[str, Any]]:
-        """Create chunks within a category"""
+    def _create_category_chunks(self, section: DocumentSection) -> List[DocumentSection]:
+        """Create chunks within a category - returns DocumentSection objects"""
         chunks = []
         content = section.content
 
         if len(content) <= self.chunk_size:
-            # Single chunk
-            chunks.append({
-                'content': content,
-                'category': section.category,
-                'importance_score': section.importance_score,
-                'metadata': {
-                    **section.metadata,
-                    'chunk_index': 0,
-                    'total_chunks': 1
-                }
-            })
+            # Single chunk - return the original section
+            chunks.append(section)
         else:
             # Multiple chunks with overlap
             sentences = self._split_into_sentences(content)
@@ -215,17 +204,19 @@ class EnhancedTextProcessor:
                 sentence_length = self._get_token_count(sentence)
 
                 if current_length + sentence_length > self.chunk_size and current_chunk:
-                    # Create chunk
-                    chunks.append({
-                        'content': current_chunk.strip(),
-                        'category': section.category,
-                        'importance_score': section.importance_score,
-                        'metadata': {
-                            **section.metadata,
-                            'chunk_index': chunk_index,
-                            'total_chunks': 'unknown'  # Will be updated later
-                        }
+                    # Create chunk as DocumentSection
+                    chunk_metadata = section.metadata.copy()
+                    chunk_metadata.update({
+                        'chunk_index': chunk_index,
+                        'total_chunks': 'unknown'  # Will be updated later
                     })
+
+                    chunks.append(DocumentSection(
+                        category=section.category,
+                        content=current_chunk.strip(),
+                        importance_score=section.importance_score,
+                        metadata=chunk_metadata
+                    ))
                     chunk_index += 1
 
                     # Start new chunk with overlap
@@ -238,21 +229,23 @@ class EnhancedTextProcessor:
 
             # Add the last chunk
             if current_chunk.strip():
-                chunks.append({
-                    'content': current_chunk.strip(),
-                    'category': section.category,
-                    'importance_score': section.importance_score,
-                    'metadata': {
-                        **section.metadata,
-                        'chunk_index': chunk_index,
-                        'total_chunks': chunk_index + 1
-                    }
+                chunk_metadata = section.metadata.copy()
+                chunk_metadata.update({
+                    'chunk_index': chunk_index,
+                    'total_chunks': chunk_index + 1
                 })
+
+                chunks.append(DocumentSection(
+                    category=section.category,
+                    content=current_chunk.strip(),
+                    importance_score=section.importance_score,
+                    metadata=chunk_metadata
+                ))
 
             # Update total_chunks for all chunks
             total_chunks = len(chunks)
             for chunk in chunks:
-                chunk['metadata']['total_chunks'] = total_chunks
+                chunk.metadata['total_chunks'] = total_chunks
 
         return chunks
 

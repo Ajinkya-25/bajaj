@@ -55,18 +55,46 @@ class FAISSManager:
             self._create_new_index()
 
     def _create_new_index(self):
-        """Create a new FAISS index with higher capacity"""
-        # Use IVF index for better scalability with large datasets
-        quantizer = faiss.IndexFlatIP(self.dimension)
-        self.index = faiss.IndexIVFFlat(quantizer, self.dimension, min(100, max(1, self.max_vectors // 10000)))
-        self.index.nprobe = 10  # Number of clusters to search
+        """Create a new FAISS index - use simple FlatIP for small datasets"""
+        # Start with a simple flat index that doesn't require training
+        self.index = faiss.IndexFlatIP(self.dimension)
 
         self.metadata = []
         self.category_mapping = defaultdict(list)
         self.vector_to_category = {}
 
         os.makedirs(os.path.dirname(self.index_path), exist_ok=True)
-        print(f"Created new IVF FAISS index with dimension {self.dimension}")
+        print(f"Created new Flat FAISS index with dimension {self.dimension}")
+
+    def _create_ivf_index_if_needed(self, num_vectors: int):
+        """Convert to IVF index if we have enough vectors"""
+        if num_vectors < 1000:  # Keep flat index for small datasets
+            return
+
+        if isinstance(self.index, faiss.IndexFlatIP):
+            print(f"Converting to IVF index for {num_vectors} vectors...")
+
+            # Calculate appropriate number of clusters
+            n_clusters = min(100, max(4, num_vectors // 50))
+
+            # Create IVF index
+            quantizer = faiss.IndexFlatIP(self.dimension)
+            new_index = faiss.IndexIVFFlat(quantizer, self.dimension, n_clusters)
+            new_index.nprobe = min(10, n_clusters)
+
+            # Get all vectors from current index
+            if self.index.ntotal > 0:
+                vectors = np.zeros((self.index.ntotal, self.dimension), dtype=np.float32)
+                for i in range(self.index.ntotal):
+                    vectors[i] = self.index.reconstruct(i)
+
+                # Train and add to new index
+                new_index.train(vectors)
+                new_index.add(vectors)
+
+                # Replace index
+                self.index = new_index
+                print(f"Successfully converted to IVF index with {n_clusters} clusters")
 
     def clear_database(self):
         """Clear all vectors and metadata - used when adding new document"""
@@ -85,10 +113,23 @@ class FAISSManager:
         # Normalize vectors for cosine similarity
         faiss.normalize_L2(vectors)
 
+        # Check if we should convert to IVF index
+        total_vectors_after = self.index.ntotal + vectors.shape[0]
+        self._create_ivf_index_if_needed(total_vectors_after)
+
         # Train index if it's IVF and not trained yet
         if hasattr(self.index, 'is_trained') and not self.index.is_trained:
             print("Training IVF index...")
-            self.index.train(vectors)
+            # Combine existing vectors with new ones for training
+            if self.index.ntotal > 0:
+                existing_vectors = np.zeros((self.index.ntotal, self.dimension), dtype=np.float32)
+                for i in range(self.index.ntotal):
+                    existing_vectors[i] = self.index.reconstruct(i)
+                training_vectors = np.vstack([existing_vectors, vectors])
+            else:
+                training_vectors = vectors
+
+            self.index.train(training_vectors)
 
         start_id = self.index.ntotal
         self.index.add(vectors)
@@ -130,63 +171,54 @@ class FAISSManager:
         query_vector = query_vector.astype(np.float32)
         faiss.normalize_L2(query_vector)
 
-        if categories is None:
-            # Search all categories but prioritize by importance
-            all_results = self._search_all_categories(query_vector, k * 3)  # Get more results initially
+        # Search all categories by default
+        all_results = self._search_all_categories(query_vector, k * 3)  # Get more results initially
 
-            # Filter by importance threshold and limit results
-            filtered_results = [
-                (score, idx, cat) for score, idx, cat in all_results
-                if self.metadata[idx].get('importance_score', 0) >= importance_threshold
-            ]
+        # Filter by importance threshold and limit results
+        filtered_results = [
+            (score, idx, cat) for score, idx, cat in all_results
+            if idx < len(self.metadata) and self.metadata[idx].get('importance_score', 0) >= importance_threshold
+        ]
 
-            # Sort by combined score (similarity + importance)
-            filtered_results.sort(key=lambda x: x[0] + self.metadata[x[1]].get('importance_score', 0) * 0.2,
-                                  reverse=True)
+        # Sort by combined score (similarity + importance)
+        filtered_results.sort(
+            key=lambda x: x[0] + self.metadata[x[1]].get('importance_score', 0) * 0.2,
+            reverse=True
+        )
 
-            # Limit to k results
-            filtered_results = filtered_results[:k]
+        # Limit to k results
+        filtered_results = filtered_results[:k]
 
-            if filtered_results:
-                scores, indices, cats = zip(*filtered_results)
-                return list(scores), list(indices), list(cats)
-            else:
-                return [], [], []
+        if filtered_results:
+            scores, indices, cats = zip(*filtered_results)
+            return list(scores), list(indices), list(cats)
         else:
-            # Search within specific categories
-            candidate_vectors = []
-            for category in categories:
-                if category in self.category_mapping:
-                    category_vectors = self.category_mapping[category]
-                    # Filter by importance
-                    filtered_vectors = [
-                        v for v in category_vectors
-                        if v['importance'] >= importance_threshold
-                    ]
-                    candidate_vectors.extend(filtered_vectors)
+            return [], [], []
 
-            if not candidate_vectors:
-                return [], [], []
+    def search(self, query_vector: np.ndarray, k: int = 3) -> Tuple[List[float], List[int]]:
+        """Basic search method for compatibility"""
+        if self.index.ntotal == 0:
+            return [], []
 
-            # Sort by importance and limit candidates
-            candidate_vectors.sort(key=lambda x: x['importance'], reverse=True)
-            candidate_ids = [v['vector_id'] for v in candidate_vectors[:k * 2]]  # Get more candidates
+        if query_vector.ndim == 1:
+            query_vector = query_vector.reshape(1, -1)
 
-            # Perform similarity search on candidates
-            results = []
-            for vector_id in candidate_ids:
-                if vector_id < len(self.metadata):
-                    # Calculate similarity (simplified - in practice you'd use FAISS search)
-                    results.append((0.5, vector_id, self.vector_to_category.get(vector_id, 'general')))
+        # Ensure query vector is float32
+        query_vector = query_vector.astype(np.float32)
+        faiss.normalize_L2(query_vector)
 
-            # Limit to k results
-            results = results[:k]
+        k = min(k, self.index.ntotal)
+        scores, indices = self.index.search(query_vector, k)
 
-            if results:
-                scores, indices, cats = zip(*results)
-                return list(scores), list(indices), list(cats)
-            else:
-                return [], [], []
+        # Filter out invalid indices
+        valid_scores = []
+        valid_indices = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx != -1:
+                valid_scores.append(float(score))
+                valid_indices.append(int(idx))
+
+        return valid_scores, valid_indices
 
     def _search_all_categories(self, query_vector: np.ndarray, k: int) -> List[Tuple[float, int, str]]:
         """Search across all categories and return results with category info"""

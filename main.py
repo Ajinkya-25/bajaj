@@ -9,6 +9,7 @@ import time
 import requests
 import os
 from urllib.parse import urlparse
+import time
 
 from document_processor import DocumentProcessorFactory
 from text_processor import EnhancedTextProcessor
@@ -22,6 +23,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="RAG System API", version="1.0.0")
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "RAG System is running"}
 
 # Initialize components
 text_processor = EnhancedTextProcessor()
@@ -69,7 +75,7 @@ async def process_document_and_answer(request: ProcessRequest):
         if not raw_text.strip():
             raise HTTPException(status_code=400, detail="No text content extracted")
 
-        # Process text with categorization
+        # Process text with categorization - Fix: return list of DocumentSection objects
         processed_text = text_processor.preprocess_text(raw_text)
         document_sections = text_processor.categorize_and_partition_document(
             processed_text,
@@ -112,7 +118,7 @@ async def process_document_and_answer(request: ProcessRequest):
         # Store in vector database
         vector_ids = vector_db.add_vectors_with_categories(embeddings, vector_metadata)
 
-        # Link vector IDs to chunks and store in PostgreSQL
+        # Convert DocumentSection objects to dictionaries for PostgreSQL storage
         chunks_for_postgres = []
         for i, section in enumerate(document_sections):
             chunks_for_postgres.append({
@@ -132,8 +138,8 @@ async def process_document_and_answer(request: ProcessRequest):
             # Generate query embedding
             query_embedding = embedding_manager.generate_query_embedding(question)
 
-            # Search for relevant chunks
-            scores, vector_indices, categories = vector_db.search_by_category(
+            # Search for relevant chunks using the correct method signature
+            scores, vector_indices, categories_used = vector_db.search_by_category(
                 query_embedding, k=5
             )
 
