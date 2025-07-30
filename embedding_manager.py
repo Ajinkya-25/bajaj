@@ -1,48 +1,28 @@
 # embeddings/embedding_manager.py
-import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
 import numpy as np
 from typing import List, Union
-from settings import settings
-
 
 class EmbeddingManager:
     def __init__(self):
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = "models/embedding-001"  # Gemini embedding model
-        self.dimension = 768  # Gemini embedding dimension
+        self.model = SentenceTransformer("all-MiniLM-L6-v2")  # Fast and effective
+        self.dimension = self.model.get_sentence_embedding_dimension()
 
     def generate_embeddings(self, texts: Union[str, List[str]]) -> np.ndarray:
-        """Generate embeddings using Google Gemini API"""
         if isinstance(texts, str):
             texts = [texts]
-
-        embeddings = []
-        for text in texts:
-            try:
-                result = genai.embed_content(
-                    model=self.model,
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                embeddings.append(result['embedding'])
-            except Exception as e:
-                print(f"Error generating embedding for text: {str(e)}")
-                # Return zero vector as fallback
-                embeddings.append([0.0] * self.dimension)
-
-        return np.array(embeddings)
+        try:
+            embeddings = self.model.encode(texts, convert_to_numpy=True)
+            return embeddings
+        except Exception as e:
+            print(f"❌ Error generating local embeddings: {e}")
+            return np.zeros((len(texts), self.dimension), dtype=np.float32)
 
     def generate_query_embedding(self, query: str) -> np.ndarray:
-        """Generate embedding for query text"""
         try:
-            result = genai.embed_content(
-                model=self.model,
-                content=query,
-                task_type="retrieval_query"
-            )
-            return np.array([result['embedding']])
+            return np.array([self.model.encode(query)])
         except Exception as e:
-            print(f"Error generating query embedding: {str(e)}")
+            print(f"❌ Error generating local query embedding: {e}")
             return np.array([[0.0] * self.dimension])
 
     def get_dimension(self) -> int:

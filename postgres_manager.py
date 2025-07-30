@@ -208,3 +208,19 @@ class PostgresManager:
         except Exception as e:
             logger.error("Failed to store query result for '%s': %s", query, e, exc_info=True)
             raise
+            
+    def clear_all_data(self):
+        """
+        Truncates all data tables to start fresh.
+        DANGEROUS: This deletes all learned documents.
+        """
+        logger.warning("CLEARING ALL DATA FROM POSTGRESQL DATABASE.")
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("TRUNCATE TABLE document_chunks, documents, query_results RESTART IDENTITY CASCADE")
+                    conn.commit()
+            logger.info("PostgreSQL tables (documents, document_chunks, query_results) cleared successfully.")
+        except Exception as e:
+            logger.error("Failed to clear PostgreSQL tables: %s", e, exc_info=True)
+            raise

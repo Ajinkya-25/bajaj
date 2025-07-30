@@ -109,3 +109,27 @@ class FAISSManager:
     def get_total_vectors(self) -> int:
         """Get total number of vectors in the index"""
         return self.index.ntotal if self.index else 0
+        
+    def clear_index(self):
+        """
+        Deletes the on-disk index and re-initializes an empty index in memory.
+        DANGEROUS: This deletes all learned vectors.
+        """
+        print("WARNING: CLEARING ALL DATA FROM FAISS VECTOR INDEX.")
+        self.index = None
+        
+        if os.path.exists(self.index_path):
+            try:
+                os.remove(self.index_path)
+                print(f"Removed FAISS index file: {self.index_path}")
+            except Exception as e:
+                print(f"Error removing FAISS index file: {e}")
+
+        if os.path.exists(self.metadata_path):
+            try:
+                os.remove(self.metadata_path)
+                print(f"Removed FAISS metadata file: {self.metadata_path}")
+            except Exception as e:
+                print(f"Error removing FAISS metadata file: {e}")
+                
+        self._create_new_index()

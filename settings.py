@@ -20,7 +20,9 @@ class Settings:
     FAISS_INDEX_PATH: str = os.getenv("FAISS_INDEX_PATH", "./data/faiss_index")
 
     # Embeddings - Google Gemini
-    EMBEDDING_DIMENSION: int = 768  # Gemini embedding dimension
+    EMBEDDING_DIMENSION: int = 384  # all-MiniLM-L6-v2 embedding dimension
+    LOCAL_EMBEDDING_MODEL: str = os.getenv("LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+
 
     # LLM - Google Gemini
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY")
