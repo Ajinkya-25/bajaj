@@ -10,7 +10,6 @@ from settings import settings
 # Configure module-level logger
 logger = logging.getLogger(__name__)
 
-
 class PostgresManager:
     def __init__(self):
         self.connection_params = {
