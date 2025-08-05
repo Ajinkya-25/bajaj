@@ -1,4 +1,6 @@
-# main.py - Final HackRx Submission Version
+# main.py
+# Final version: Increasing top_k to 20 for maximum context retrieval.
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, Header
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -73,7 +75,8 @@ async def hackrx_run(request: HackRxRequest, authorization: str = Header(...)):
         logger.info("Running semantic query on questions")
         answers = []
         for q in request.questions:
-            result = query_pipeline.process_query(q)
+            # --- FINAL FIX: Increased top_k to 20 for maximum context ---
+            result = query_pipeline.process_query(q, top_k=20)
             answers.append(result.get("answer", "No answer found."))
 
         return JSONResponse(content={"answers": answers})

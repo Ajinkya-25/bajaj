@@ -61,52 +61,89 @@ class ProcessingPipeline:
 
             # 4) Further preprocessing (normalize punctuation, etc.)
             processed_text = self.text_processor.preprocess_text(cleaned)
-            logger.debug(f"Processed text length: {len(processed_text)} chars")
+            logger.info(f"Processed text length: {len(processed_text)} chars")
 
-            # 5) Chunking
+            # 5) Chunking with improved logic
             chunks = self.text_processor.chunk_text(
                 processed_text,
                 metadata={"document_id": document_id, "filename": filename}
             )
             logger.info(f"Generated {len(chunks)} text chunks")
+            
             if not chunks:
                 logger.warning(f"No chunks generated for document id={document_id}")
                 return {"error": "No chunks generated from document"}
 
-            # 6) Filter by byte‑size, embed, and store
+            # 6) Verify chunks and prepare for embedding
             MAX_BYTES = 36000
             valid_texts, valid_metadata, valid_chunks = [], [], []
+            
             for i, chunk in enumerate(chunks):
-                b = chunk["content"].encode("utf-8")
-                if len(b) <= MAX_BYTES:
-                    valid_texts.append(chunk["content"])
+                content = chunk["content"]
+                byte_size = len(content.encode("utf-8"))
+                
+                if byte_size <= MAX_BYTES:
+                    valid_texts.append(content)
                     valid_metadata.append({
                         "document_id": document_id,
                         "chunk_index": i,
-                        "filename": filename
+                        "filename": filename,
+                        "byte_size": byte_size,
+                        "char_count": len(content)
                     })
                     valid_chunks.append(chunk)
+                    logger.debug(f"✅ Chunk {i}: {len(content)} chars, {byte_size} bytes")
                 else:
-                    logger.warning(f"⚠️ Skipping over‑sized chunk {i} ({len(b)} bytes)")
+                    logger.error(f"❌ Chunk {i} still exceeds limit: {byte_size} bytes")
 
             if not valid_texts:
-                raise RuntimeError("No valid chunks under byte limit")
+                logger.error("No valid chunks after size filtering")
+                return {"error": "All chunks exceed the size limit. Document may be too dense or contain unusual formatting."}
 
-            embeddings = self.embedding_manager.generate_embeddings(valid_texts)
-            logger.info(f"Generated {len(embeddings)} embeddings (dim={self.embedding_manager.get_dimension()})")
+            logger.info(f"Processing {len(valid_texts)} valid chunks for embedding")
 
-            vector_ids = self.vector_db.add_vectors(embeddings, valid_metadata)
-            logger.info(f"Stored embeddings in FAISS, got {len(vector_ids)} vector IDs")
+            # 7) Generate embeddings
+            try:
+                embeddings = self.embedding_manager.generate_embeddings(valid_texts)
+                logger.info(f"Generated {len(embeddings)} embeddings (dim={self.embedding_manager.get_dimension()})")
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings: {e}")
+                return {"error": f"Embedding generation failed: {str(e)}"}
 
-            # attach vector_ids back to chunks
-            for meta, vid in zip(valid_metadata, vector_ids):
-                chunks[meta["chunk_index"]]["vector_id"] = vid
+            # 8) Store in vector database
+            try:
+                vector_ids = self.vector_db.add_vectors(embeddings, valid_metadata)
+                logger.info(f"Stored embeddings in FAISS, got {len(vector_ids)} vector IDs")
+            except Exception as e:
+                logger.error(f"Failed to store vectors: {e}")
+                return {"error": f"Vector storage failed: {str(e)}"}
 
-            self.postgres_db.store_chunks(document_id, chunks)
-            self.postgres_db.mark_document_processed(document_id)
-            logger.info(f"Document id={document_id} marked as processed")
+            # 9) Attach vector_ids back to chunks and store in PostgreSQL
+            try:
+                for meta, vid in zip(valid_metadata, vector_ids):
+                    chunk_idx = meta["chunk_index"]
+                    if chunk_idx < len(chunks):
+                        chunks[chunk_idx]["vector_id"] = vid
 
-            return {"document_id": document_id, "chunks_created": len(chunks), "status": "success"}
+                self.postgres_db.store_chunks(document_id, valid_chunks)
+                self.postgres_db.mark_document_processed(document_id)
+                logger.info(f"Document id={document_id} marked as processed")
+            except Exception as e:
+                logger.error(f"Failed to store chunks in PostgreSQL: {e}")
+                return {"error": f"Chunk storage failed: {str(e)}"}
+
+            # 10) Success response with detailed statistics
+            total_chars = sum(len(chunk["content"]) for chunk in valid_chunks)
+            avg_chunk_size = total_chars // len(valid_chunks) if valid_chunks else 0
+            
+            return {
+                "document_id": document_id,
+                "chunks_created": len(valid_chunks),
+                "total_characters": total_chars,
+                "average_chunk_size": avg_chunk_size,
+                "original_text_length": len(raw),
+                "status": "success"
+            }
 
         except Exception as e:
             logger.error(f"Processing failed for '{filename}': {e}", exc_info=True)
